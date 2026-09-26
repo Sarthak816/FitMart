@@ -90,6 +90,28 @@ const createMembershipBodySchema = z
   })
   .strict();
 
+// Sort accepts one of the documented membership fields, optionally prefixed with
+// "-" to reverse the order (for example `-renewCount`). Unknown fields are
+// rejected so a caller cannot ask MongoDB to sort on an arbitrary/unindexed
+// path. Default ordering is newest first.
+const membershipSortSchema = z
+  .string()
+  .trim()
+  .regex(
+    /^-?(createdAt|status|renewCount|expiresAt)$/,
+    'sort must be one of createdAt, status, renewCount, expiresAt (prefix with - to reverse)'
+  )
+  .default('-createdAt');
+
+// Unknown query params are stripped rather than rejected so cache-busting params
+// and future additions do not turn into 400s for existing clients.
+const listMembershipsQuerySchema = z.object({
+  page: z.coerce.number().int().min(1, 'page must be 1 or greater').default(1),
+  limit: z.coerce.number().int().min(1).max(50, 'limit cannot exceed 50').default(10),
+  status: z.enum(['active', 'paused', 'cancelled', 'expired', 'trialing']).optional(),
+  sort: membershipSortSchema,
+});
+
 module.exports = {
   cartAddSchema: {
     params: userIdParamsSchema,
@@ -114,6 +136,9 @@ module.exports = {
   },
   createMembershipSchema: {
     body: createMembershipBodySchema,
+  },
+  listMembershipsSchema: {
+    query: listMembershipsQuerySchema,
   },
   updateWorkoutLogSchema: {
     body: workoutLogBodySchema,

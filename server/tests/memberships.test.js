@@ -96,6 +96,23 @@ function enroll(uid, planId, extra = {}) {
   return post(uid, { planId, ...extra });
 }
 
+// Direct model insert so the list tests do not depend on the POST route.
+function createMembership(userId, program, overrides = {}) {
+  return Membership.create({
+    userId,
+    planId: program._id,
+    status: 'active',
+    priceSnapshot: { ...DEFAULT_PRICE },
+    ...overrides,
+  });
+}
+
+function get(uid, query = '') {
+  const req = request(app).get(`/api/memberships${query}`);
+  if (uid) req.set('x-test-uid', uid);
+  return req;
+}
+
 describe('POST /api/memberships', () => {
   test('rejects an unauthenticated request', async () => {
     const program = await createProgram();
@@ -345,5 +362,184 @@ describe('POST /api/memberships', () => {
     const res = await enroll(ADMIN_UID, program._id.toString(), { userId: OTHER_UID });
 
     expect(res.status).toBe(409);
+  });
+});
+
+describe('GET /api/memberships', () => {
+  test('rejects an unauthenticated request', async () => {
+    const res = await get(null);
+
+    expect(res.status).toBe(401);
+  });
+
+  test('returns an empty list for a user with no memberships', async () => {
+    const res = await get(USER_UID);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      success: true,
+      data: {
+        memberships: [],
+        pagination: { page: 1, limit: 10, total: 0, totalPages: 0 },
+      },
+    });
+  });
+
+  test('returns only the callers own memberships', async () => {
+    const program = await createProgram();
+    await createMembership(USER_UID, program);
+    await createMembership(OTHER_UID, program);
+
+    const res = await get(USER_UID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.memberships).toHaveLength(1);
+    expect(res.body.data.memberships[0].userId).toBe(USER_UID);
+    expect(res.body.data.pagination.total).toBe(1);
+  });
+
+  test('lets an admin see every membership', async () => {
+    const program = await createProgram();
+    await createMembership(USER_UID, program);
+    await createMembership(OTHER_UID, program);
+    await createMembership(ADMIN_UID, program);
+
+    const res = await get(ADMIN_UID);
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.memberships).toHaveLength(3);
+    expect(res.body.data.pagination.total).toBe(3);
+  });
+
+  test('filters by status', async () => {
+    const program = await createProgram();
+    await createMembership(USER_UID, program, { status: 'active' });
+    await createMembership(USER_UID, program, { status: 'cancelled' });
+    await createMembership(OTHER_UID, program, { status: 'cancelled' });
+
+    const res = await get(USER_UID, '?status=cancelled');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.memberships).toHaveLength(1);
+    expect(res.body.data.memberships[0].status).toBe('cancelled');
+    expect(res.body.data.pagination.total).toBe(1);
+  });
+
+  test('applies the status filter for admins across all users', async () => {
+    const program = await createProgram();
+    await createMembership(USER_UID, program, { status: 'active' });
+    await createMembership(OTHER_UID, program, { status: 'cancelled' });
+
+    const res = await get(ADMIN_UID, '?status=cancelled');
+
+    expect(res.status).toBe(200);
+    expect(res.body.data.memberships).toHaveLength(1);
+    expect(res.body.data.memberships[0].userId).toBe(OTHER_UID);
+  });
+
+  test('paginates the results and reports the metadata', async () => {
+    const program = await createProgram();
+    for (let i = 0; i < 5; i += 1) {
+      await createMembership(USER_UID, program, { renewCount: i });
+    }
+
+    const firstPage = await get(USER_UID, '?page=1&limit=2');
+    expect(firstPage.status).toBe(200);
+    expect(firstPage.body.data.memberships).toHaveLength(2);
+    expect(firstPage.body.data.pagination).toEqual({
+      page: 1,
+      limit: 2,
+      total: 5,
+      totalPages: 3,
+    });
+
+    const lastPage = await get(USER_UID, '?page=3&limit=2');
+    expect(lastPage.body.data.memberships).toHaveLength(1);
+    expect(lastPage.body.data.pagination.page).toBe(3);
+  });
+
+  test('does not leak memberships from other pages or users', async () => {
+    const program = await createProgram();
+    for (let i = 0; i < 4; i += 1) {
+      await createMembership(USER_UID, program, { renewCount: i });
+    }
+    await createMembership(OTHER_UID, program);
+
+    const res = await get(USER_UID, '?page=2&limit=2');
+
+    expect(res.body.data.memberships).toHaveLength(2);
+    expect(res.body.data.memberships.every((m) => m.userId === USER_UID)).toBe(true);
+  });
+
+  test('sorts by a whitelisted field ascending', async () => {
+    const program = await createProgram();
+    await createMembership(USER_UID, program, { renewCount: 3 });
+    await createMembership(USER_UID, program, { renewCount: 1 });
+    await createMembership(USER_UID, program, { renewCount: 2 });
+
+    const res = await get(USER_UID, '?sort=renewCount');
+
+    expect(res.body.data.memberships.map((m) => m.renewCount)).toEqual([1, 2, 3]);
+  });
+
+  test('sorts descending when the field is prefixed with a dash', async () => {
+    const program = await createProgram();
+    await createMembership(USER_UID, program, { renewCount: 3 });
+    await createMembership(USER_UID, program, { renewCount: 1 });
+    await createMembership(USER_UID, program, { renewCount: 2 });
+
+    const res = await get(USER_UID, '?sort=-renewCount');
+
+    expect(res.body.data.memberships.map((m) => m.renewCount)).toEqual([3, 2, 1]);
+  });
+
+  test('defaults to newest first', async () => {
+    const program = await createProgram();
+    const older = await createMembership(USER_UID, program, { renewCount: 1 });
+    // Force a distinct timestamp; two inserts can otherwise share a millisecond.
+    await Membership.updateOne(
+      { _id: older._id },
+      { $set: { createdAt: new Date(Date.now() - 60_000) } }
+    );
+    const newer = await createMembership(USER_UID, program, { renewCount: 2 });
+
+    const res = await get(USER_UID);
+
+    expect(res.body.data.memberships.map((m) => m._id)).toEqual([
+      newer._id.toString(),
+      older._id.toString(),
+    ]);
+  });
+
+  test('populates the program fields and hides internal keys', async () => {
+    const program = await createProgram();
+    await createMembership(USER_UID, program);
+
+    const res = await get(USER_UID);
+    const membership = res.body.data.memberships[0];
+
+    expect(membership.planId).toMatchObject({
+      goal: 'Foundation Fitness',
+      difficulty: 'beginner',
+      lengthDays: 28,
+      image: 'https://cdn.example.com/foundation.png',
+    });
+    expect(membership.planId).not.toHaveProperty('price');
+    expect(membership).not.toHaveProperty('__v');
+  });
+
+  test.each([
+    ['a non-numeric page', '?page=abc'],
+    ['a zero page', '?page=0'],
+    ['a limit above the cap', '?limit=51'],
+    ['an unknown status', '?status=zombie'],
+    ['an unsupported sort field', '?sort=userId'],
+  ])('rejects %s', async (_label, query) => {
+    // `success: false` on validation errors arrives with #990; assert only the
+    // envelope keys that exist on main today.
+    const res = await get(USER_UID, query);
+
+    expect(res.status).toBe(400);
+    expect(res.body.error).toBe('Invalid request');
   });
 });

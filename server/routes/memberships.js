@@ -4,7 +4,10 @@ const Membership = require('../models/Membership');
 const Program = require('../models/Program');
 const verifyFirebaseToken = require('../middleware/verifyFirebaseToken');
 const validateRequest = require('../middleware/validateRequest');
-const { createMembershipSchema } = require('../validation/requestSchemas');
+const {
+  createMembershipSchema,
+  listMembershipsSchema,
+} = require('../validation/requestSchemas');
 const { ok, fail } = require('../utils/apiResponse');
 
 // Ownership + admin checks, mirroring the pattern in server/routes/user.js
@@ -15,6 +18,17 @@ const DEV_ADMIN_EMAIL = process.env.DEV_ADMIN_EMAIL || '';
 const isDev = process.env.NODE_ENV !== 'production';
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const DEFAULT_LIMIT = 10;
+const MAX_LIMIT = 50;
+
+// "-renewCount" means descending; the plain field name means ascending. The set
+// of allowed fields is enforced by listMembershipsSchema, so this only needs to
+// translate the direction.
+function buildSort(sort) {
+  const descending = sort.startsWith('-');
+  const field = descending ? sort.slice(1) : sort;
+  return { [field]: descending ? -1 : 1 };
+}
 
 function isAdminUser(req) {
   if (ADMIN_UID && req.user.uid === ADMIN_UID) return true;
@@ -102,6 +116,60 @@ router.post('/', verifyFirebaseToken, validateRequest(createMembershipSchema), a
   } catch (err) {
     console.error('[memberships] POST /api/memberships error:', err);
     return fail(res, 'Failed to create membership', 500);
+  }
+});
+
+/**
+ * @route   GET /api/memberships
+ * @desc    List memberships with pagination, status filtering and sorting.
+ *          Regular users see only their own; admins see every membership.
+ * @access  Private
+ */
+router.get('/', verifyFirebaseToken, validateRequest(listMembershipsSchema), async (req, res) => {
+  try {
+    // Express 5 exposes req.query as a getter, so validateRequest's assignment
+    // of the parsed object is a no-op until #990 lands. Read defaults and
+    // coercion here so the endpoint behaves identically either way.
+    const page = Number(req.query.page) || 1;
+    const limit = Math.min(Number(req.query.limit) || DEFAULT_LIMIT, MAX_LIMIT);
+    const sort =
+      typeof req.query.sort === 'string' && req.query.sort
+        ? req.query.sort
+        : '-createdAt';
+    const status = req.query.status;
+
+    const filter = {};
+    // Admins see every membership; everybody else is scoped to their own uid.
+    if (!isAdminUser(req)) filter.userId = req.user.uid;
+    if (status) filter.status = status;
+
+    const skip = (page - 1) * limit;
+
+    const [memberships, total] = await Promise.all([
+      Membership.find(filter)
+        .select('-__v')
+        .sort(buildSort(sort))
+        .skip(skip)
+        .limit(limit)
+        .populate({ path: 'planId', select: 'goal difficulty lengthDays image' })
+        .lean(),
+      Membership.countDocuments(filter),
+    ]);
+
+    return ok(res, {
+      data: {
+        memberships,
+        pagination: {
+          page,
+          limit,
+          total,
+          totalPages: Math.ceil(total / limit),
+        },
+      },
+    });
+  } catch (err) {
+    console.error('[memberships] GET /api/memberships error:', err);
+    return fail(res, 'Failed to fetch memberships', 500);
   }
 });
 
