@@ -47,22 +47,47 @@ beforeEach(async () => {
   await Promise.all([Program.deleteMany({}), Exercise.deleteMany({})]);
 });
 
+// One valid prescription slot. The ObjectId does not have to exist in the
+// Exercise collection — the model only checks that the reference is well formed.
+function makeExercise(overrides = {}) {
+  return {
+    exerciseId: new mongoose.Types.ObjectId(),
+    sets: 3,
+    reps: 10,
+    restSeconds: 60,
+    notes: '',
+    ...overrides,
+  };
+}
+
+// Build `count` consecutive, valid days so the Program model's cross-field rules
+// (day.length === lengthDays, unique day numbers, at least one exercise per day)
+// hold without every call having to spell the schedule out.
+function buildDays(count) {
+  const focuses = ['Push', 'Pull', 'Legs', 'Core', 'Cardio'];
+  return Array.from({ length: count }, (_, index) => ({
+    dayNumber: index + 1,
+    focus: focuses[index] || `Day ${index + 1}`,
+    exercises: [makeExercise()],
+  }));
+}
+
 // Helper: create a program with sensible defaults so each test only states what
-// it actually cares about. Uses `save(options)` rather than `Program.create(doc,
-// options)` because create() is variadic and would treat the options object as a
-// second document to insert.
+// it actually cares about. Whichever of `day` / `lengthDays` the caller supplies
+// determines the other, keeping the document valid. Uses `save(options)` rather
+// than `Program.create(doc, options)` because create() is variadic and would
+// treat the options object as a second document to insert.
 function createProgram(overrides = {}, options = undefined) {
+  const day = overrides.day ?? buildDays(overrides.lengthDays ?? 3);
+  const lengthDays = overrides.lengthDays ?? day.length;
+
   const program = new Program({
     goal: 'Build full body strength',
     difficulty: 'beginner',
-    lengthDays: 3,
     tags: ['strength', 'full-body'],
-    day: [
-      { dayNumber: 1, focus: 'Push', exercises: [] },
-      { dayNumber: 2, focus: 'Pull', exercises: [] },
-      { dayNumber: 3, focus: 'Legs', exercises: [] },
-    ],
     ...overrides,
+    day,
+    lengthDays,
   });
 
   return program.save(options);
@@ -133,8 +158,8 @@ describe('GET /api/programs (list)', () => {
   });
 
   test('sorts ascending when the field has no - prefix', async () => {
-    await createProgram({ goal: 'Long', lengthDays: 30 });
-    await createProgram({ goal: 'Short', lengthDays: 7 });
+    await createProgram({ goal: 'Longer plan', lengthDays: 30 });
+    await createProgram({ goal: 'Short plan', lengthDays: 7 });
 
     const res = await request(app).get('/api/programs?sort=lengthDays');
 
@@ -143,8 +168,8 @@ describe('GET /api/programs (list)', () => {
   });
 
   test('sorts descending when the field is prefixed with -', async () => {
-    await createProgram({ goal: 'Long', lengthDays: 30 });
-    await createProgram({ goal: 'Short', lengthDays: 7 });
+    await createProgram({ goal: 'Longer plan', lengthDays: 30 });
+    await createProgram({ goal: 'Short plan', lengthDays: 7 });
 
     const res = await request(app).get('/api/programs?sort=-lengthDays');
 
@@ -283,9 +308,9 @@ describe('GET /api/programs/:id (detail)', () => {
   test('returns days ordered by day number', async () => {
     const program = await createProgram({
       day: [
-        { dayNumber: 3, focus: 'Legs', exercises: [] },
-        { dayNumber: 1, focus: 'Push', exercises: [] },
-        { dayNumber: 2, focus: 'Pull', exercises: [] },
+        { dayNumber: 3, focus: 'Legs', exercises: [makeExercise()] },
+        { dayNumber: 1, focus: 'Push', exercises: [makeExercise()] },
+        { dayNumber: 2, focus: 'Pull', exercises: [makeExercise()] },
       ],
     });
 
