@@ -886,7 +886,32 @@ The Program + Membership spine. A **Program** is a progressive training plan; a 
 | `DELETE` | `/api/memberships/:id` | ✅ Owner/Admin | **Planned** ([#996](https://github.com/parthbuilds-community/FitMart/issues/996)) — cancel a membership. Soft delete: sets `status: "cancelled"` and `cancelledAt`. `409` if already cancelled/expired. |
 | `POST` | `/api/workouts` | ✅ | Log a workout. **Planned** ([#997](https://github.com/parthbuilds-community/FitMart/issues/997)): logging against an active membership advances its `currentDayIndex` (capped at `lengthDays`) and returns `{ currentDayIndex, totalDays, progressPercent, programGoal }`. |
 
-> **Request/response shapes:** all six endpoints use the shared `{ "success": true, ...data }` / `{ "success": false, "error": "<message>" }` contract. See [`docs/USAGE_GUIDE.md`](docs/USAGE_GUIDE.md) for runnable enrolment, workout-logging and cancellation examples.
+**Request / response shapes**
+
+```js
+// POST /api/memberships — request body
+{ "planId": "664e0a1bb8e4d3f0a1b2c3d0" }   // + optional "userId" for admins
+
+// GET /api/programs — list
+{ "success": true, "data": { "programs": [ /* Program[] */ ], "pagination": { "page": 1, "limit": 10, "total": 1, "totalPages": 1 } } }
+
+// GET /api/programs/:id — detail
+{ "success": true, "data": { "program": { /* Program with populated exercises */ } } }
+
+// POST /api/memberships — 201
+{ "success": true, "data": { "membership": { /* Membership with populated planId */ } } }
+
+// GET /api/memberships — list
+{ "success": true, "data": { "memberships": [ /* Membership[] */ ], "pagination": { "page": 1, "limit": 10, "total": 1, "totalPages": 1 } } }
+
+// DELETE /api/memberships/:id (planned) / POST /api/workouts
+{ "success": true, "data": { "membership": { /* ... */ } } }
+
+// Errors from every endpoint
+{ "success": false, "error": "<message>" }
+```
+
+See [`docs/USAGE_GUIDE.md`](docs/USAGE_GUIDE.md) for runnable enrolment, workout-logging and cancellation examples, and [`docs/PROGRAM_MODEL.md`](docs/PROGRAM_MODEL.md#programs-api) / [`docs/MEMBERSHIP_MODEL.md`](docs/MEMBERSHIP_MODEL.md#memberships-api) for full field-by-field payloads.
 
 ### 🏋️‍♂️ Workouts
 
