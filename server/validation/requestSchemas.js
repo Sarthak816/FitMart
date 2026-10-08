@@ -58,6 +58,11 @@ const productUpdateBodySchema = productFieldsSchema
     message: 'At least one product field is required',
   });
 
+// Shared 24-character hexadecimal ObjectId validator.
+const objectIdSchema = z
+  .string()
+  .regex(/^[0-9a-f]{24}$/i, 'must be a 24-character hexadecimal id');
+
 const workoutExerciseSchema = z.object({
   id: z.string().min(1, 'id is required'),
   name: z.string().min(1, 'name is required'),
@@ -67,17 +72,17 @@ const workoutExerciseSchema = z.object({
   gifUrl: z.string().optional()
 }).strict();
 
+// `programId` and `dayIndex` are the optional program-context fields added for
+// #997. Existing clients that only send `{ date, title?, notes?, exercises? }`
+// keep working; the handler falls back to the caller's active membership.
 const workoutLogBodySchema = z.object({
   date: z.string().min(1, 'date is required'),
   title: z.string().optional(),
   notes: z.string().optional(),
-  exercises: z.array(workoutExerciseSchema).optional()
+  exercises: z.array(workoutExerciseSchema).optional(),
+  programId: objectIdSchema.optional(),
+  dayIndex: nonNegativeIntegerSchema.optional()
 }).strict();
-
-// Shared 24-character hexadecimal ObjectId validator.
-const objectIdSchema = z
-  .string()
-  .regex(/^[0-9a-f]{24}$/i, 'must be a 24-character hexadecimal id');
 
 // ── Memberships ─────────────────────────────────────────────────────────────
 
